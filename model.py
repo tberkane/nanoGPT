@@ -19,9 +19,9 @@ from torch.nn import functional as F
 class HierarchicalPositionEncoding(nn.Module):
     def __init__(self, d_model, max_len, device, encoded_space, encoded_period):
         super().__init__()
-        self.char_pe = nn.Embedding(max_len, d_model)
-        self.word_pe = nn.Embedding(max_len, d_model)
-        self.sent_pe = nn.Embedding(max_len, d_model)
+        self.char_pe = nn.Embedding(max_len, d_model).to(device)
+        self.word_pe = nn.Embedding(max_len, d_model).to(device)
+        self.sent_pe = nn.Embedding(max_len, d_model).to(device)
         self.device = device
         self.encoded_space = encoded_space
         self.encoded_period = encoded_period
@@ -215,7 +215,7 @@ class GPT(nn.Module):
             self.hipe = HierarchicalPositionEncoding(
                 config.n_embd,
                 config.block_size,
-                self.transformer.wpe.weight.device,
+                self.transformer.wte.weight.device,
                 config.encoded_space,
                 config.encoded_period,
             )
