@@ -265,6 +265,11 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
 
+import torch
+import torch.nn.functional as F
+import math
+
+
 @torch.no_grad()
 def calculate_position_losses(model, X, Y, ctx):
     model.eval()
@@ -278,8 +283,8 @@ def calculate_position_losses(model, X, Y, ctx):
         logits, _ = model(X)
 
     # Reshape logits and targets
-    logits = logits.view(-1, logits.size(-1))
-    Y = Y.view(-1)
+    logits = logits.view(b * t, -1)  # (b*t, vocab_size)
+    Y = Y.view(-1)  # (b*t)
 
     # Calculate loss
     loss = F.cross_entropy(logits, Y, reduction="none")
@@ -290,17 +295,13 @@ def calculate_position_losses(model, X, Y, ctx):
 
     # Calculate average loss and BPC at each position
     for pos in range(t):
-        pos_loss = (loss[:, pos] * mask[:, pos]).sum() / mask[:, pos].sum().clamp(min=1)
+        pos_mask = mask[:, pos]
+        if pos_mask.sum() > 0:
+            pos_loss = (loss[:, pos] * pos_mask).sum() / pos_mask.sum()
+        else:
+            pos_loss = torch.tensor(0.0, device=device)
         position_losses[pos] = pos_loss
         position_bpcs[pos] = pos_loss / math.log(2)
-
-    # Replace NaNs (from positions with no tokens) with 0
-    position_losses = torch.where(
-        torch.isnan(position_losses), torch.zeros_like(position_losses), position_losses
-    )
-    position_bpcs = torch.where(
-        torch.isnan(position_bpcs), torch.zeros_like(position_bpcs), position_bpcs
-    )
 
     model.train()
     return position_losses.cpu().tolist(), position_bpcs.cpu().tolist()
@@ -329,8 +330,21 @@ def estimate_loss_and_bpc():
 
             # Calculate position-wise losses and BPCs
             pos_losses, pos_bpcs = calculate_position_losses(model, X, Y, ctx)
-            position_losses_all[split] += torch.tensor(pos_losses)
-            position_bpcs_all[split] += torch.tensor(pos_bpcs)
+            pos_losses = torch.tensor(pos_losses)
+            pos_bpcs = torch.tensor(pos_bpcs)
+
+            # Ensure the tensors have the correct size
+            if len(pos_losses) > model.config.block_size:
+                pos_losses = pos_losses[: model.config.block_size]
+                pos_bpcs = pos_bpcs[: model.config.block_size]
+            elif len(pos_losses) < model.config.block_size:
+                pos_losses = F.pad(
+                    pos_losses, (0, model.config.block_size - len(pos_losses))
+                )
+                pos_bpcs = F.pad(pos_bpcs, (0, model.config.block_size - len(pos_bpcs)))
+
+            position_losses_all[split] += pos_losses
+            position_bpcs_all[split] += pos_bpcs
 
         losses_all[split] = losses.mean().item()
         bpcs_all[split] = bpcs.mean().item()
