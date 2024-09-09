@@ -39,9 +39,10 @@ class TokenFrequencyTracker:
     def update(self, tokens):
         tokens = tokens.to(self.device)
         unique, counts = torch.unique(tokens, return_counts=True)
-        self.counts[unique] = (
-            self.momentum * self.counts[unique] + (1 - self.momentum) * counts.float()
-        )
+        # self.counts[unique] = (
+        #     self.momentum * self.counts[unique] + (1 - self.momentum) * counts.float()
+        # )
+        self.counts[unique] = self.counts[unique] + counts.float()
         self.total_count += tokens.numel()
 
     def get_frequencies(self):
