@@ -295,7 +295,7 @@ if compile:
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
-logger = GradientScalingLogger(model, log_interval=100)
+logger = GradientScalingLogger(model)
 if model.grad_scaling_config.use_scaling:
     print("Using gradient scaling")
 else:
