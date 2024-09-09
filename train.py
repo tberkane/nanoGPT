@@ -67,7 +67,7 @@ warmup_iters = 2000  # how many steps to warm up for
 lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # gradient scaling
-use_scaling = True
+use_scaling = False
 alpha = 0.1
 beta = 1.0
 momentum = 0.99
