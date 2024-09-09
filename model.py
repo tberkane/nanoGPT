@@ -37,13 +37,8 @@ class TokenFrequencyTracker:
         return self
 
     def update(self, tokens):
-        print(
-            f"Updating with tokens: min={tokens.min().item()}, max={tokens.max().item()}, shape={tokens.shape}"
-        )
         tokens = tokens.to(self.device)
         unique, counts = torch.unique(tokens, return_counts=True)
-        print(f"Unique tokens: {unique}")
-        print(f"Counts: {counts}")
         self.counts[unique] = (
             self.momentum * self.counts[unique] + (1 - self.momentum) * counts.float()
         )
