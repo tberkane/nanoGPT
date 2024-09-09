@@ -117,6 +117,7 @@ torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
 device_type = "cuda" if "cuda" in device else "cpu"  # for later use in torch.autocast
+print(f"device: {device_type}")
 # note: float16 data type will automatically use a GradScaler
 ptdtype = {
     "float32": torch.float32,
@@ -326,7 +327,9 @@ while True:
                 {
                     "iter": iter_num,
                     "train/loss": losses["train"],
+                    "train/bpc": bpcs["train"],
                     "val/loss": losses["val"],
+                    "val/bpc": bpcs["val"],
                     "lr": lr,
                     "mfu": running_mfu * 100,  # convert to percentage
                 }
