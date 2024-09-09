@@ -180,6 +180,8 @@ class GPTConfig:
         True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     )
     use_hipe: bool = False
+    encoded_space: int = 2
+    encoded_period: int = 16
 
 
 class GPT(nn.Module):
@@ -211,7 +213,11 @@ class GPT(nn.Module):
         # Add Hierarchical Position Encoding if enabled
         if config.use_hipe:
             self.hipe = HierarchicalPositionEncoding(
-                config.n_embd, config.block_size, self.transformer.wpe.weight.device
+                config.n_embd,
+                config.block_size,
+                self.transformer.wpe.weight.device,
+                config.encoded_space,
+                config.encoded_period,
             )
 
         # init all weights
