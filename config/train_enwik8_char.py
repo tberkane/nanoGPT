@@ -17,7 +17,7 @@ wandb_run_name = "mini-gpt"
 # 12 batch size * 1024 block size * 5 gradaccum= 61,440
 # enwik8 has 90M tokens, so 1 epoch ~= 1500 iters
 
-dataset = "enwik8_char"
+dataset = "enwik8"
 gradient_accumulation_steps = 5
 batch_size = 12
 block_size = 1024  # context of up to 1024 previous characters
