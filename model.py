@@ -43,7 +43,9 @@ class HierarchicalPositionEncoding(nn.Module):
         word_boundaries, sent_boundaries = self.estimate_boundaries(x)
 
         char_pe = self.char_pe(char_pos)
+        print(char_pe.device)
         word_pe = self.word_pe(word_boundaries)
+        print(word_pe.device)
         sent_pe = self.sent_pe(sent_boundaries)
 
         return char_pe + word_pe + sent_pe
@@ -194,7 +196,10 @@ class GPT(nn.Module):
 
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                wte=nn.Embedding(
+                    config.vocab_size,
+                    config.n_embd,
+                ),
                 wpe=nn.Embedding(config.block_size, config.n_embd),
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
