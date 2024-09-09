@@ -10,7 +10,7 @@ log_interval = 10  # don't print too too often
 always_save_checkpoint = False
 
 wandb_log = False  # override via command line if you like
-wandb_project = "enwik8-char"
+wandb_project = "enwik8"
 wandb_run_name = "mini-gpt"
 
 # these make the total batch size be ~60k
