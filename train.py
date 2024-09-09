@@ -168,8 +168,6 @@ class GradientScalingLogger:
                 }
             )
 
-        self.step += 1
-
 
 def get_batch(split):
     # We recreate np.memmap every batch to avoid a memory leak, as per
