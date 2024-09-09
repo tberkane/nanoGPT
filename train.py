@@ -277,19 +277,22 @@ def calculate_position_losses(model, X, Y, ctx):
     with ctx:
         logits, _ = model(X)
 
-    # Calculate loss at each position
-    loss = F.cross_entropy(
-        logits.view(-1, logits.size(-1)), Y.view(-1), reduction="none"
-    )
-    loss = loss.view(Y.shape)
+    # Reshape logits and targets
+    logits = logits.view(-1, logits.size(-1))
+    Y = Y.view(-1)
+
+    # Calculate loss
+    loss = F.cross_entropy(logits, Y, reduction="none")
+    loss = loss.view(b, t)
 
     # Mask out padding tokens (assuming 0 is the padding token)
-    mask = (Y != 0).float()
+    mask = (Y.view(b, t) != 0).float()
 
     # Calculate average loss and BPC at each position
     for pos in range(t):
-        position_losses[pos] = (loss[:, pos] * mask[:, pos]).sum() / mask[:, pos].sum()
-        position_bpcs[pos] = position_losses[pos] / math.log(2)
+        pos_loss = (loss[:, pos] * mask[:, pos]).sum() / mask[:, pos].sum().clamp(min=1)
+        position_losses[pos] = pos_loss
+        position_bpcs[pos] = pos_loss / math.log(2)
 
     # Replace NaNs (from positions with no tokens) with 0
     position_losses = torch.where(
