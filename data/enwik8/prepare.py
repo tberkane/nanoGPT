@@ -48,6 +48,10 @@ def decode(l):
     )  # decoder: take a list of integers, output a string
 
 
+print("encoding of space: ", encode(" "))
+print("encoding of period: ", encode("."))
+
+
 # create the train and test splits
 n = len(data)
 train_data = data[: int(n * 0.9)]

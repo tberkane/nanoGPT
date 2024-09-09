@@ -16,91 +16,37 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
-@dataclass
-class GradientScalingConfig:
-    use_scaling: bool = False
-    alpha: float = 0.1
-    beta: float = 1.0
-    momentum: float = 0.99
-
-
-class TokenFrequencyTracker:
-    def __init__(self, vocab_size, momentum=0.99, device="cpu"):
+class HierarchicalPositionEncoding(nn.Module):
+    def __init__(self, d_model, max_len, device, encoded_space, encoded_period):
+        super().__init__()
+        self.char_pe = nn.Embedding(max_len, d_model)
+        self.word_pe = nn.Embedding(max_len, d_model)
+        self.sent_pe = nn.Embedding(max_len, d_model)
         self.device = device
-        self.counts = torch.zeros(vocab_size, device=self.device)
-        self.total_count = 0
-        self.momentum = momentum
+        self.encoded_space = encoded_space
+        self.encoded_period = encoded_period
 
-    def to(self, device):
-        self.device = device
-        self.counts = self.counts.to(device)
-        return self
+        # Initialize embeddings with normal distribution
+        self.char_pe.weight.data.normal_(mean=0.0, std=0.02)
+        self.word_pe.weight.data.normal_(mean=0.0, std=0.02)
+        self.sent_pe.weight.data.normal_(mean=0.0, std=0.02)
 
-    def update(self, tokens):
-        tokens = tokens.to(self.device)
-        unique, counts = torch.unique(tokens, return_counts=True)
-        # self.counts[unique] = (
-        #     self.momentum * self.counts[unique] + (1 - self.momentum) * counts.float()
-        # )
-        self.counts[unique] = self.counts[unique] + counts.float()
-        self.total_count += tokens.numel()
+    def estimate_boundaries(self, x):
+        # Simple heuristic: assume space is word boundary and period is sentence boundary
+        word_boundaries = (x == self.encoded_space).cumsum(dim=-1)
+        sent_boundaries = (x == self.encoded_period).cumsum(dim=-1)
+        return word_boundaries, sent_boundaries
 
-    def get_frequencies(self):
-        return self.counts / self.total_count if self.total_count > 0 else self.counts
+    def forward(self, x):
+        seq_len = x.size(1)
+        char_pos = torch.arange(seq_len, device=self.device).unsqueeze(0)
+        word_boundaries, sent_boundaries = self.estimate_boundaries(x)
 
-    def get_top_n_frequent(self, n=5):
-        frequencies = self.get_frequencies()
-        top_n = torch.topk(frequencies, n)
-        return [
-            (int(idx), float(freq)) for idx, freq in zip(top_n.indices, top_n.values)
-        ]
+        char_pe = self.char_pe(char_pos)
+        word_pe = self.word_pe(word_boundaries)
+        sent_pe = self.sent_pe(sent_boundaries)
 
-
-class GradientScalingDebugger:
-    def __init__(self, model, print_interval=100):
-        self.model = model
-        self.print_interval = print_interval
-        self.step = 0
-
-    def debug(self):
-        if self.step % self.print_interval == 0:
-            if hasattr(self.model, "token_frequency_tracker"):
-                frequencies = self.model.token_frequency_tracker.get_frequencies()
-                top_5 = self.model.token_frequency_tracker.get_top_n_frequent(5)
-
-                print(f"Step {self.step}")
-                print(
-                    f"Total tokens seen: {self.model.token_frequency_tracker.total_count}"
-                )
-                print(
-                    f"Min frequency: {frequencies.min().item():.4f}, Max frequency: {frequencies.max().item():.4f}"
-                )
-                print("Top 5 frequent tokens:")
-                for idx, freq in top_5:
-                    print(f"  Token {idx}: {freq:.4f}")
-                print("---")
-
-        self.step += 1
-
-
-class GradientRescaler(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input, token_ids, frequencies, alpha, beta):
-        ctx.save_for_backward(token_ids, frequencies)
-        ctx.alpha = alpha
-        ctx.beta = beta
-        return input
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        token_ids, frequencies = ctx.saved_tensors
-        scale_factors = ctx.beta * (1 - frequencies) ** ctx.alpha
-
-        scale_factors = scale_factors[token_ids]
-
-        scaled_grad = grad_output * scale_factors.unsqueeze(-1)
-
-        return scaled_grad, None, None, None, None
+        return char_pe + word_pe + sent_pe
 
 
 class LayerNorm(nn.Module):
@@ -233,11 +179,12 @@ class GPTConfig:
     bias: bool = (
         True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     )
+    use_hipe: bool = False
 
 
 class GPT(nn.Module):
 
-    def __init__(self, config, grad_scaling_config: GradientScalingConfig):
+    def __init__(self, config):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
@@ -261,6 +208,12 @@ class GPT(nn.Module):
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
 
+        # Add Hierarchical Position Encoding if enabled
+        if config.use_hipe:
+            self.hipe = HierarchicalPositionEncoding(
+                config.n_embd, config.block_size, self.transformer.wpe.weight.device
+            )
+
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -270,21 +223,8 @@ class GPT(nn.Module):
                     p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
                 )
 
-        self.grad_scaling_config = grad_scaling_config
-        if self.grad_scaling_config.use_scaling:
-            self.token_frequency_tracker = TokenFrequencyTracker(
-                config.vocab_size, momentum=self.grad_scaling_config.momentum
-            )
-            self.gradient_rescaler = GradientRescaler.apply
-            self.debugger = GradientScalingDebugger(self)
-
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
-
-    def to(self, device):
-        if hasattr(self, "token_frequency_tracker"):
-            self.token_frequency_tracker.to(device)
-        return super().to(device)
 
     def get_num_params(self, non_embedding=True):
         """
@@ -314,22 +254,14 @@ class GPT(nn.Module):
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device)  # shape (t)
 
-        if self.grad_scaling_config.use_scaling:
-            self.token_frequency_tracker.update(idx)
-            frequencies = self.token_frequency_tracker.get_frequencies()
-            tok_emb = self.transformer.wte(idx)
-            tok_emb = self.gradient_rescaler(
-                tok_emb,
-                idx,
-                frequencies,
-                self.grad_scaling_config.alpha,
-                self.grad_scaling_config.beta,
-            )
-            self.debugger.debug()
+        # forward the GPT model itself
+        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        if self.config.use_hipe:
+            pos_emb = self.hipe(idx)  # hierarchical position embeddings
         else:
-            tok_emb = self.transformer.wte(idx)
-
-        pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
+            pos_emb = self.transformer.wpe(
+                pos
+            )  # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)

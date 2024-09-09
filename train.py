@@ -27,7 +27,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from model import GPTConfig, GPT, GradientScalingConfig
+from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -66,11 +66,8 @@ decay_lr = True  # whether to decay the learning rate
 warmup_iters = 2000  # how many steps to warm up for
 lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
-# gradient scaling
-use_scaling = False
-alpha = 0.1
-beta = 1.0
-momentum = 0.99
+# Hierarchical Position Embeddings
+use_hipe = False
 # DDP settings
 backend = "nccl"  # 'nccl', 'gloo', etc.
 # system
@@ -138,35 +135,10 @@ ctx = (
 # poor man's data loader
 data_dir = os.path.join("data", dataset)
 
-
-class GradientScalingLogger:
-    def __init__(self, model):
-        self.model = model
-        self.log_interval = log_interval
-
-    def log(self):
-        if self.model.grad_scaling_config.use_scaling:
-            frequencies = self.model.token_frequency_tracker.get_frequencies()
-            scale_factors = (
-                self.model.grad_scaling_config.beta
-                * (1 - frequencies) ** self.model.grad_scaling_config.alpha
-            )
-
-            print(
-                f"Min frequency: {frequencies.min().item():.4f}, Max frequency: {frequencies.max().item():.4f}"
-            )
-            print(
-                f"Min scale factor: {scale_factors.min().item():.4f}, Max scale factor: {scale_factors.max().item():.4f}"
-            )
-
-            wandb.log(
-                {
-                    "min_token_frequency": frequencies.min().item(),
-                    "max_token_frequency": frequencies.max().item(),
-                    "min_scale_factor": scale_factors.min().item(),
-                    "max_scale_factor": scale_factors.max().item(),
-                }
-            )
+if use_hipe:
+    print("Using Hierarchical Position Embeddings")
+else:
+    print("Using Standard Position Embeddings")
 
 
 def get_batch(split):
@@ -218,6 +190,7 @@ model_args = dict(
     bias=bias,
     vocab_size=None,
     dropout=dropout,
+    use_hipe=use_hipe,
 )  # start with model_args from command line
 if init_from == "scratch":
     # init a new model from scratch
@@ -229,10 +202,7 @@ if init_from == "scratch":
         )
     model_args["vocab_size"] = meta_vocab_size if meta_vocab_size is not None else 50304
     gptconf = GPTConfig(**model_args)
-    grad_scaling_config = GradientScalingConfig(
-        use_scaling=use_scaling, alpha=alpha, beta=beta, momentum=momentum
-    )
-    model = GPT(gptconf, grad_scaling_config)
+    model = GPT(gptconf)
 elif init_from == "resume":
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
@@ -292,12 +262,6 @@ if compile:
 # wrap model into DDP container
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
-
-logger = GradientScalingLogger(model)
-if model.grad_scaling_config.use_scaling:
-    print("Using gradient scaling")
-else:
-    print("Not using gradient scaling")
 
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
@@ -378,7 +342,6 @@ while True:
                     "mfu": running_mfu * 100,  # convert to percentage
                 }
             )
-        logger.log()
         if losses["val"] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses["val"]
             if iter_num > 0:
