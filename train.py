@@ -140,23 +140,18 @@ data_dir = os.path.join("data", dataset)
 
 
 class GradientScalingLogger:
-    def __init__(self, model, log_interval=100):
+    def __init__(self, model):
         self.model = model
         self.log_interval = log_interval
-        self.step = 0
 
     def log(self):
-        if (
-            self.step % self.log_interval == 0
-            and self.model.grad_scaling_config.use_scaling
-        ):
+        if self.model.grad_scaling_config.use_scaling:
             frequencies = self.model.token_frequency_tracker.get_frequencies()
             scale_factors = (
                 self.model.grad_scaling_config.beta
                 * (1 - frequencies) ** self.model.grad_scaling_config.alpha
             )
 
-            print(f"Step {self.step}")
             print(
                 f"Min frequency: {frequencies.min().item():.4f}, Max frequency: {frequencies.max().item():.4f}"
             )
