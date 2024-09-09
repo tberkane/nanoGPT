@@ -258,7 +258,8 @@ if ddp:
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss_and_bpc():
-    out = {}
+    losses_all = {}
+    bpcs_all = {}
     model.eval()
     for split in ["train", "val"]:
         losses = torch.zeros(eval_iters)
@@ -274,9 +275,10 @@ def estimate_loss_and_bpc():
             # BPC = (loss in nats) / log(2) = (loss in nats) * (1 / log(2))
             bpcs[k] = loss.item() / math.log(2)
 
-        out[split] = {"loss": losses.mean().item(), "bpc": bpcs.mean().item()}
+        losses_all[split] = losses.mean().item()
+        bpcs_all[split] = bpcs.mean().item()
     model.train()
-    return out
+    return losses_all, bpcs_all
 
 
 # learning rate decay scheduler (cosine with warmup)
@@ -315,9 +317,9 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses = estimate_loss_and_bpc()
+        losses, bpcs = estimate_loss_and_bpc()
         print(
-            f"step {iter_num}: train loss {losses['train']['loss']:.4f} ({losses['train']['bpc']:.4f} BPC), val loss {losses['val']['loss']:.4f} ({losses['val']['bpc']:.4f} BPC)"
+            f"step {iter_num}: train loss {losses['train']:.4f} ({bpcs['train']:.4f} BPC), val loss {losses['val']:.4f} ({bpcs['val']:.4f} BPC)"
         )
         if wandb_log:
             wandb.log(
