@@ -50,22 +50,22 @@ class TokenFrequencyTracker:
 
 class GradientRescaler(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, frequencies, alpha, beta):
-        ctx.save_for_backward(frequencies)
+    def forward(ctx, input, token_ids, frequencies, alpha, beta):
+        ctx.save_for_backward(token_ids, frequencies)
         ctx.alpha = alpha
         ctx.beta = beta
-        return input.clone()
+        return input
 
     @staticmethod
     def backward(ctx, grad_output):
-        (frequencies,) = ctx.saved_tensors
+        token_ids, frequencies = ctx.saved_tensors
         scale_factors = ctx.beta * (1 - frequencies) ** ctx.alpha
 
-        scale_factors = scale_factors.view(1, -1, 1)  # Shape: [1, vocab_size, 1]
+        scale_factors = scale_factors[token_ids]
 
-        scaled_grad = grad_output * scale_factors
+        scaled_grad = grad_output * scale_factors.unsqueeze(-1)
 
-        return scaled_grad, None, None, None
+        return scaled_grad, None, None, None, None
 
 
 class LayerNorm(nn.Module):
@@ -284,6 +284,7 @@ class GPT(nn.Module):
             tok_emb = self.transformer.wte(idx)
             tok_emb = self.gradient_rescaler(
                 tok_emb,
+                idx,
                 frequencies,
                 self.grad_scaling_config.alpha,
                 self.grad_scaling_config.beta,
