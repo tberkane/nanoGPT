@@ -34,6 +34,7 @@ class HierarchicalPositionEncoding(nn.Module):
     def estimate_boundaries(self, x):
         # Simple heuristic: assume space is word boundary and period is sentence boundary
         word_boundaries = (x == self.encoded_space).cumsum(dim=-1)
+        print(word_boundaries.device)
         sent_boundaries = (x == self.encoded_period).cumsum(dim=-1)
         return word_boundaries, sent_boundaries
 
@@ -43,9 +44,7 @@ class HierarchicalPositionEncoding(nn.Module):
         word_boundaries, sent_boundaries = self.estimate_boundaries(x)
 
         char_pe = self.char_pe(char_pos)
-        print(char_pe.device)
         word_pe = self.word_pe(word_boundaries)
-        print(word_pe.device)
         sent_pe = self.sent_pe(sent_boundaries)
 
         return char_pe + word_pe + sent_pe
