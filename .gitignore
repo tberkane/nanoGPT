@@ -10,4 +10,4 @@ __pycache__/
 input.txt
 env/
 venv/
-data
+data/enwik8/enwik8.txt
