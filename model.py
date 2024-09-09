@@ -19,9 +19,9 @@ from torch.nn import functional as F
 class HierarchicalPositionEncoding(nn.Module):
     def __init__(self, d_model, max_len, device, encoded_space, encoded_period):
         super().__init__()
-        self.char_pe = nn.Embedding(max_len, d_model).to(device)
-        self.word_pe = nn.Embedding(max_len, d_model).to(device)
-        self.sent_pe = nn.Embedding(max_len, d_model).to(device)
+        self.char_pe = nn.Embedding(max_len, d_model)
+        self.word_pe = nn.Embedding(max_len, d_model)
+        self.sent_pe = nn.Embedding(max_len, d_model)
         self.device = device
         self.encoded_space = encoded_space
         self.encoded_period = encoded_period
@@ -31,16 +31,17 @@ class HierarchicalPositionEncoding(nn.Module):
         self.word_pe.weight.data.normal_(mean=0.0, std=0.02)
         self.sent_pe.weight.data.normal_(mean=0.0, std=0.02)
 
+        self.to(device)
+
     def estimate_boundaries(self, x):
         # Simple heuristic: assume space is word boundary and period is sentence boundary
         word_boundaries = (x == self.encoded_space).cumsum(dim=-1)
-        print(word_boundaries.device)
         sent_boundaries = (x == self.encoded_period).cumsum(dim=-1)
         return word_boundaries, sent_boundaries
 
     def forward(self, x):
         seq_len = x.size(1)
-        char_pos = torch.arange(seq_len, device=self.device).unsqueeze(0)
+        char_pos = torch.arange(seq_len, device=x.device).unsqueeze(0)
         word_boundaries, sent_boundaries = self.estimate_boundaries(x)
 
         char_pe = self.char_pe(char_pos)
