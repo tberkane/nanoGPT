@@ -25,20 +25,27 @@ class GradientScalingConfig:
 
 
 class TokenFrequencyTracker:
-    def __init__(self, vocab_size, momentum=0.99):
-        self.counts = torch.zeros(vocab_size)
+    def __init__(self, vocab_size, momentum=0.99, device="cpu"):
+        self.device = device
+        self.counts = torch.zeros(vocab_size, device=self.device)
         self.total_count = 0
         self.momentum = momentum
 
+    def to(self, device):
+        self.device = device
+        self.counts = self.counts.to(device)
+        return self
+
     def update(self, tokens):
+        tokens = tokens.to(self.device)
         unique, counts = torch.unique(tokens, return_counts=True)
         self.counts[unique] = (
-            self.momentum * self.counts[unique] + (1 - self.momentum) * counts
+            self.momentum * self.counts[unique] + (1 - self.momentum) * counts.float()
         )
         self.total_count += tokens.numel()
 
     def get_frequencies(self):
-        return self.counts / self.total_count
+        return self.counts / self.total_count if self.total_count > 0 else self.counts
 
 
 class GradientRescaler(torch.autograd.Function):
@@ -233,6 +240,11 @@ class GPT(nn.Module):
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
 
+    def to(self, device):
+        if hasattr(self, "token_frequency_tracker"):
+            self.token_frequency_tracker.to(device)
+        return super().to(device)
+
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
@@ -263,16 +275,15 @@ class GPT(nn.Module):
 
         if self.grad_scaling_config.use_scaling:
             self.token_frequency_tracker.update(idx)
+            frequencies = self.token_frequency_tracker.get_frequencies()
             tok_emb = self.gradient_rescaler(
                 self.transformer.wte(idx),
-                self.token_frequency_tracker.get_frequencies().to(device),
+                frequencies,
                 self.grad_scaling_config.alpha,
                 self.grad_scaling_config.beta,
             )
         else:
-            tok_emb = self.transformer.wte(
-                idx
-            )  # token embeddings of shape (b, t, n_embd)
+            tok_emb = self.transformer.wte(idx)
 
         pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
