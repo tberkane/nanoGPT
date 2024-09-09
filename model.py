@@ -37,8 +37,13 @@ class TokenFrequencyTracker:
         return self
 
     def update(self, tokens):
+        print(
+            f"Updating with tokens: min={tokens.min().item()}, max={tokens.max().item()}, shape={tokens.shape}"
+        )
         tokens = tokens.to(self.device)
         unique, counts = torch.unique(tokens, return_counts=True)
+        print(f"Unique tokens: {unique}")
+        print(f"Counts: {counts}")
         self.counts[unique] = (
             self.momentum * self.counts[unique] + (1 - self.momentum) * counts.float()
         )
@@ -46,6 +51,40 @@ class TokenFrequencyTracker:
 
     def get_frequencies(self):
         return self.counts / self.total_count if self.total_count > 0 else self.counts
+
+    def get_top_n_frequent(self, n=5):
+        frequencies = self.get_frequencies()
+        top_n = torch.topk(frequencies, n)
+        return [
+            (int(idx), float(freq)) for idx, freq in zip(top_n.indices, top_n.values)
+        ]
+
+
+class GradientScalingDebugger:
+    def __init__(self, model, print_interval=100):
+        self.model = model
+        self.print_interval = print_interval
+        self.step = 0
+
+    def debug(self):
+        if self.step % self.print_interval == 0:
+            if hasattr(self.model, "token_frequency_tracker"):
+                frequencies = self.model.token_frequency_tracker.get_frequencies()
+                top_5 = self.model.token_frequency_tracker.get_top_n_frequent(5)
+
+                print(f"Step {self.step}")
+                print(
+                    f"Total tokens seen: {self.model.token_frequency_tracker.total_count}"
+                )
+                print(
+                    f"Min frequency: {frequencies.min().item():.4f}, Max frequency: {frequencies.max().item():.4f}"
+                )
+                print("Top 5 frequent tokens:")
+                for idx, freq in top_5:
+                    print(f"  Token {idx}: {freq:.4f}")
+                print("---")
+
+        self.step += 1
 
 
 class GradientRescaler(torch.autograd.Function):
@@ -241,6 +280,7 @@ class GPT(nn.Module):
                 config.vocab_size, momentum=self.grad_scaling_config.momentum
             )
             self.gradient_rescaler = GradientRescaler.apply
+            self.debugger = GradientScalingDebugger(self)
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params() / 1e6,))
@@ -289,6 +329,7 @@ class GPT(nn.Module):
                 self.grad_scaling_config.alpha,
                 self.grad_scaling_config.beta,
             )
+            self.debugger.debug()
         else:
             tok_emb = self.transformer.wte(idx)
 
