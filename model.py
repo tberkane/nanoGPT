@@ -22,7 +22,6 @@ class HierarchicalPositionEncoding(nn.Module):
         self.char_pe = nn.Embedding(max_len, d_model)
         self.word_pe = nn.Embedding(max_len, d_model)
         self.sent_pe = nn.Embedding(max_len, d_model)
-        self.device = device
         self.encoded_space = encoded_space
         self.encoded_period = encoded_period
 

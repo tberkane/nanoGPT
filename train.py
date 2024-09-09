@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+from torch.nn import functional as F
 
 from model import GPTConfig, GPT
 
@@ -264,11 +265,54 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
 
-# helps estimate an arbitrarily accurate loss over either split using many batches
+@torch.no_grad()
+def calculate_position_losses(model, X, Y, ctx):
+    model.eval()
+    device = X.device
+    b, t = X.size()
+
+    position_losses = torch.zeros(t, device=device)
+    position_bpcs = torch.zeros(t, device=device)
+
+    with ctx:
+        logits, _ = model(X)
+
+    # Calculate loss at each position
+    loss = F.cross_entropy(
+        logits.view(-1, logits.size(-1)), Y.view(-1), reduction="none"
+    )
+    loss = loss.view(Y.shape)
+
+    # Mask out padding tokens (assuming 0 is the padding token)
+    mask = (Y != 0).float()
+
+    # Calculate average loss and BPC at each position
+    for pos in range(t):
+        position_losses[pos] = (loss[:, pos] * mask[:, pos]).sum() / mask[:, pos].sum()
+        position_bpcs[pos] = position_losses[pos] / math.log(2)
+
+    # Replace NaNs (from positions with no tokens) with 0
+    position_losses = torch.where(
+        torch.isnan(position_losses), torch.zeros_like(position_losses), position_losses
+    )
+    position_bpcs = torch.where(
+        torch.isnan(position_bpcs), torch.zeros_like(position_bpcs), position_bpcs
+    )
+
+    model.train()
+    return position_losses.cpu().tolist(), position_bpcs.cpu().tolist()
+
+
 @torch.no_grad()
 def estimate_loss_and_bpc():
     losses_all = {}
     bpcs_all = {}
+    position_losses_all = {
+        split: torch.zeros(model.config.block_size) for split in ["train", "val"]
+    }
+    position_bpcs_all = {
+        split: torch.zeros(model.config.block_size) for split in ["train", "val"]
+    }
     model.eval()
     for split in ["train", "val"]:
         losses = torch.zeros(eval_iters)
@@ -278,16 +322,20 @@ def estimate_loss_and_bpc():
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
-
-            # Calculate BPC
-            # Assuming categorical cross-entropy loss
-            # BPC = (loss in nats) / log(2) = (loss in nats) * (1 / log(2))
             bpcs[k] = loss.item() / math.log(2)
+
+            # Calculate position-wise losses and BPCs
+            pos_losses, pos_bpcs = calculate_position_losses(model, X, Y, ctx)
+            position_losses_all[split] += torch.tensor(pos_losses)
+            position_bpcs_all[split] += torch.tensor(pos_bpcs)
 
         losses_all[split] = losses.mean().item()
         bpcs_all[split] = bpcs.mean().item()
+        position_losses_all[split] /= eval_iters
+        position_bpcs_all[split] /= eval_iters
+
     model.train()
-    return losses_all, bpcs_all
+    return losses_all, bpcs_all, position_losses_all, position_bpcs_all
 
 
 # learning rate decay scheduler (cosine with warmup)
@@ -326,7 +374,7 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses, bpcs = estimate_loss_and_bpc()
+        losses, bpcs, _, position_bpcs = estimate_loss_and_bpc()
         print(
             f"step {iter_num}: train loss {losses['train']:.4f} ({bpcs['train']:.4f} BPC), val loss {losses['val']:.4f} ({bpcs['val']:.4f} BPC)"
         )
@@ -342,6 +390,20 @@ while True:
                     "mfu": running_mfu * 100,  # convert to percentage
                 }
             )
+
+            for split in ["train", "val"]:
+                wandb.log(
+                    {
+                        f"{split}_position_bpcs": wandb.plot.line(
+                            X=list(range(len(position_bpcs[split]))),
+                            Y=position_bpcs[split].tolist(),
+                            title=f"{split.capitalize()} BPC by Position",
+                            x_name="Position",
+                            y_name="BPC",
+                        ),
+                    }
+                )
+
         if losses["val"] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses["val"]
             if iter_num > 0:
