@@ -67,8 +67,6 @@ decay_lr = True  # whether to decay the learning rate
 warmup_iters = 2000  # how many steps to warm up for
 lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
-# Hierarchical Position Embeddings
-use_hipe = False
 # DDP settings
 backend = "nccl"  # 'nccl', 'gloo', etc.
 # system
@@ -136,11 +134,6 @@ ctx = (
 # poor man's data loader
 data_dir = os.path.join("data", dataset)
 
-if use_hipe:
-    print("Using Hierarchical Position Embeddings")
-else:
-    print("Using Standard Position Embeddings")
-
 
 def get_batch(split):
     # We recreate np.memmap every batch to avoid a memory leak, as per
@@ -191,7 +184,6 @@ model_args = dict(
     bias=bias,
     vocab_size=None,
     dropout=dropout,
-    use_hipe=use_hipe,
 )  # start with model_args from command line
 if init_from == "scratch":
     # init a new model from scratch
@@ -265,58 +257,10 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
 
-import torch
-import torch.nn.functional as F
-import math
-
-
-@torch.no_grad()
-def calculate_position_losses(model, X, Y, ctx):
-    model.eval()
-    device = X.device
-    b, t = X.size()
-
-    position_losses = torch.zeros(t, device=device)
-    position_bpcs = torch.zeros(t, device=device)
-
-    with ctx:
-        logits, _ = model(X)
-
-    # Reshape logits and targets
-    logits = logits.view(b * t, -1)  # (b*t, vocab_size)
-    Y = Y.view(-1)  # (b*t)
-
-    # Calculate loss
-    loss = F.cross_entropy(logits, Y, reduction="none")
-    loss = loss.view(b, t)
-
-    # Mask out padding tokens (assuming 0 is the padding token)
-    mask = (Y.view(b, t) != 0).float()
-
-    # Calculate average loss and BPC at each position
-    for pos in range(t):
-        pos_mask = mask[:, pos]
-        if pos_mask.sum() > 0:
-            pos_loss = (loss[:, pos] * pos_mask).sum() / pos_mask.sum()
-        else:
-            pos_loss = torch.tensor(0.0, device=device)
-        position_losses[pos] = pos_loss
-        position_bpcs[pos] = pos_loss / math.log(2)
-
-    model.train()
-    return position_losses.cpu().tolist(), position_bpcs.cpu().tolist()
-
-
 @torch.no_grad()
 def estimate_loss_and_bpc():
     losses_all = {}
     bpcs_all = {}
-    position_losses_all = {
-        split: torch.zeros(model.config.block_size) for split in ["train", "val"]
-    }
-    position_bpcs_all = {
-        split: torch.zeros(model.config.block_size) for split in ["train", "val"]
-    }
     model.eval()
     for split in ["train", "val"]:
         losses = torch.zeros(eval_iters)
@@ -328,31 +272,11 @@ def estimate_loss_and_bpc():
             losses[k] = loss.item()
             bpcs[k] = loss.item() / math.log(2)
 
-            # Calculate position-wise losses and BPCs
-            pos_losses, pos_bpcs = calculate_position_losses(model, X, Y, ctx)
-            pos_losses = torch.tensor(pos_losses)
-            pos_bpcs = torch.tensor(pos_bpcs)
-
-            # Ensure the tensors have the correct size
-            if len(pos_losses) > model.config.block_size:
-                pos_losses = pos_losses[: model.config.block_size]
-                pos_bpcs = pos_bpcs[: model.config.block_size]
-            elif len(pos_losses) < model.config.block_size:
-                pos_losses = F.pad(
-                    pos_losses, (0, model.config.block_size - len(pos_losses))
-                )
-                pos_bpcs = F.pad(pos_bpcs, (0, model.config.block_size - len(pos_bpcs)))
-
-            position_losses_all[split] += pos_losses
-            position_bpcs_all[split] += pos_bpcs
-
         losses_all[split] = losses.mean().item()
         bpcs_all[split] = bpcs.mean().item()
-        position_losses_all[split] /= eval_iters
-        position_bpcs_all[split] /= eval_iters
 
     model.train()
-    return losses_all, bpcs_all, position_losses_all, position_bpcs_all
+    return losses_all, bpcs_all
 
 
 # learning rate decay scheduler (cosine with warmup)
@@ -391,7 +315,7 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses, bpcs, _, position_bpcs = estimate_loss_and_bpc()
+        losses, bpcs = estimate_loss_and_bpc()
         print(
             f"step {iter_num}: train loss {losses['train']:.4f} ({bpcs['train']:.4f} BPC), val loss {losses['val']:.4f} ({bpcs['val']:.4f} BPC)"
         )
@@ -407,19 +331,6 @@ while True:
                     "mfu": running_mfu * 100,  # convert to percentage
                 }
             )
-
-            for split in ["train", "val"]:
-                wandb.log(
-                    {
-                        f"{split}_position_bpcs": wandb.plot.line(
-                            X=list(range(len(position_bpcs[split]))),
-                            Y=position_bpcs[split].tolist(),
-                            title=f"{split.capitalize()} BPC by Position",
-                            x_name="Position",
-                            y_name="BPC",
-                        ),
-                    }
-                )
 
         if losses["val"] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses["val"]

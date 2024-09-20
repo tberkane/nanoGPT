@@ -16,40 +16,6 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
-class HierarchicalPositionEncoding(nn.Module):
-    def __init__(self, d_model, max_len, device, encoded_space, encoded_period):
-        super().__init__()
-        self.char_pe = nn.Embedding(max_len, d_model)
-        self.word_pe = nn.Embedding(max_len, d_model)
-        self.sent_pe = nn.Embedding(max_len, d_model)
-        self.encoded_space = encoded_space
-        self.encoded_period = encoded_period
-
-        # Initialize embeddings with normal distribution
-        self.char_pe.weight.data.normal_(mean=0.0, std=0.02)
-        self.word_pe.weight.data.normal_(mean=0.0, std=0.02)
-        self.sent_pe.weight.data.normal_(mean=0.0, std=0.02)
-
-        self.to(device)
-
-    def estimate_boundaries(self, x):
-        # Simple heuristic: assume space is word boundary and period is sentence boundary
-        word_boundaries = (x == self.encoded_space).cumsum(dim=-1)
-        sent_boundaries = (x == self.encoded_period).cumsum(dim=-1)
-        return word_boundaries, sent_boundaries
-
-    def forward(self, x):
-        seq_len = x.size(1)
-        char_pos = torch.arange(seq_len, device=x.device).unsqueeze(0)
-        word_boundaries, sent_boundaries = self.estimate_boundaries(x)
-
-        char_pe = self.char_pe(char_pos)
-        word_pe = self.word_pe(word_boundaries)
-        sent_pe = self.sent_pe(sent_boundaries)
-
-        return char_pe + word_pe + sent_pe
-
-
 class LayerNorm(nn.Module):
     """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
 
@@ -180,9 +146,6 @@ class GPTConfig:
     bias: bool = (
         True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     )
-    use_hipe: bool = False
-    encoded_space: int = 2
-    encoded_period: int = 16
 
 
 class GPT(nn.Module):
@@ -213,16 +176,6 @@ class GPT(nn.Module):
         self.transformer.wte.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
-
-        # Add Hierarchical Position Encoding if enabled
-        if config.use_hipe:
-            self.hipe = HierarchicalPositionEncoding(
-                config.n_embd,
-                config.block_size,
-                self.transformer.wte.weight.device,
-                config.encoded_space,
-                config.encoded_period,
-            )
 
         # init all weights
         self.apply(self._init_weights)
@@ -266,12 +219,10 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        if self.config.use_hipe:
-            pos_emb = self.hipe(idx)  # hierarchical position embeddings
-        else:
-            pos_emb = self.transformer.wpe(
-                pos
-            )  # position embeddings of shape (1, t, n_embd)
+
+        pos_emb = self.transformer.wpe(
+            pos
+        )  # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
